@@ -14,6 +14,8 @@ from mailbox import MailboxManager
 from compression import CompressionManager
 from worker_skills import WorkerSkills, SkillMatcher, get_worker_profile
 from error_recovery import RetryStrategy, ErrorClassifier, ErrorRecoveryManager, ErrorType
+from skill_loader import SkillLoader
+from bedrock_client import create_bedrock_client
 
 
 class WorkerAgent:
@@ -40,12 +42,8 @@ class WorkerAgent:
 
         print(f"  Skills: {', '.join(self.skills)}")
 
-        # Initialize AWS Bedrock client
-        session = boto3.Session(profile_name=config.AWS_PROFILE)
-        self.bedrock = session.client(
-            service_name="bedrock-runtime",
-            region_name=config.AWS_REGION
-        )
+        # Initialize AWS Bedrock client with retry and fallback
+        self.bedrock = create_bedrock_client()
 
         # Initialize components
         self.tool_dispatcher = ToolDispatcher(config.STATE_DIR)
@@ -53,6 +51,13 @@ class WorkerAgent:
         self.mailbox = MailboxManager(config.STATE_DIR)
         self.error_recovery = ErrorRecoveryManager(config.STATE_DIR)
         self.retry_strategy = RetryStrategy()
+
+        # Initialize skill loader for specialized task guidance
+        self.skill_loader = None
+        if config.SKILLS_ENABLED and config.SKILLS_DIR.exists():
+            self.skill_loader = SkillLoader(config.SKILLS_DIR)
+            self.skill_loader.discover_skills()
+            print(f"  📚 Skills: {len(self.skill_loader.skills)} skill packages available")
 
         # Create worker mailbox
         worker_inbox = config.MAILBOXES_DIR / self.name / "inbox"
@@ -255,10 +260,25 @@ Please:
 Remember: You are a Worker agent. Keep your context isolated and cite tool outputs.
 """
 
+        # Inject relevant skill guidance if available
+        if self.skill_loader and self.skill_loader.skills:
+            activated_skills = []
+            for skill_name, skill in self.skill_loader.skills.items():
+                if self.skill_loader.should_activate_skill(skill_name, task.goal):
+                    content = self.skill_loader.load_skill_content(skill_name)
+                    if content:
+                        context += f"\n\n<skill_guidance name=\"{skill_name}\">\n{content}\n</skill_guidance>\n"
+                        activated_skills.append(skill_name)
+
+            if activated_skills:
+                print(f"  🎯 Activated skills: {', '.join(activated_skills)}")
+            else:
+                print(f"  📚 No specific skills activated for this task")
+
         try:
             # Send context and start execution
             iteration = 0
-            max_iterations = 20
+            max_iterations = config.WORKER_MAX_ITERATIONS
             should_continue = True
 
             response = self._call_claude(context)
@@ -355,7 +375,7 @@ def main():
     import sys
 
     worker_name = sys.argv[1] if len(sys.argv) > 1 else "Worker_alpha"
-    scan_interval = int(sys.argv[2]) if len(sys.argv) > 2 else 10
+    scan_interval = int(sys.argv[2]) if len(sys.argv) > 2 else config.WORKER_SCAN_INTERVAL
 
     worker = WorkerAgent(worker_name)
 

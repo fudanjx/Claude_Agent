@@ -146,6 +146,73 @@ class MailboxManager:
         inbox = self._get_inbox_dir(agent_name)
         return len(list(inbox.glob("*.json")))
 
+    def get_inbox_summary(
+        self,
+        agent_name: str,
+        msg_type: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Get lightweight inbox summaries with file pointers.
+
+        This method returns minimal message metadata plus file paths,
+        allowing the agent to selectively read full messages only when needed.
+        This dramatically reduces token usage compared to loading full messages.
+
+        Args:
+            agent_name: Agent name
+            msg_type: Optional filter by message type
+
+        Returns:
+            List of summary dicts with keys:
+            - msg_id: Message ID
+            - type: Message type (CLAIM, PROGRESS, COMPLETE, BLOCKED, etc.)
+            - from_agent: Sender agent name
+            - task_id: Associated task ID
+            - timestamp: ISO timestamp
+            - summary: First 100 chars of deliverable/reason/summary
+            - file_path: Path to full message JSON file
+        """
+        inbox = self._get_inbox_dir(agent_name)
+        summaries = []
+
+        for msg_file in sorted(inbox.glob("*.json")):
+            with open(msg_file, "r") as f:
+                data = json.load(f)
+                message = Message.from_dict(data)
+
+                # Filter by type if specified
+                if msg_type is not None and message.type != msg_type:
+                    continue
+
+                # Extract short summary from body based on message type
+                body = message.body
+                summary_text = ""
+                if message.type == "COMPLETE":
+                    summary_text = body.get("deliverable", "")[:100]
+                elif message.type == "BLOCKED":
+                    summary_text = body.get("reason", "")[:100]
+                elif message.type == "PROGRESS":
+                    summary_text = body.get("summary", "")[:100]
+                elif message.type == "CLAIM":
+                    summary_text = body.get("why_me", "")[:100]
+                else:
+                    # For other types, try to find any text field
+                    for key in ["summary", "notes", "reason", "deliverable"]:
+                        if key in body:
+                            summary_text = str(body[key])[:100]
+                            break
+
+                summaries.append({
+                    "msg_id": message.msg_id,
+                    "type": message.type,
+                    "from_agent": message.from_agent,
+                    "task_id": message.task_id,
+                    "timestamp": message.timestamp,
+                    "summary": summary_text,
+                    "file_path": str(msg_file)
+                })
+
+        return summaries
+
     def create_request_message(
         self,
         from_agent: str,

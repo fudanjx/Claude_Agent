@@ -1,6 +1,6 @@
 # Claude Agent SDK
 
-A production-ready, general-purpose multi-agent system built with Claude Sonnet 4.6 via AWS Bedrock.
+A production-ready, general-purpose multi-agent system built with Claude Sonnet 4.6 via AWS Bedrock. Features Claude Code-style subagent architecture with isolated contexts and tool restrictions.
 
 ## 🚀 Quick Start
 
@@ -9,11 +9,27 @@ A production-ready, general-purpose multi-agent system built with Claude Sonnet 
 pip install -r requirements.txt
 ```
 
-### 2. Configure AWS
-Ensure your AWS profile "work" is configured:
+### 2. Configure Environment
+Create a `.env` file with your AWS settings:
 ```bash
-aws configure --profile work
+cp .env.example .env
+# Edit .env with your AWS profile and region
 ```
+
+Your `.env` should contain:
+```env
+AWS_PROFILE=your-aws-profile
+AWS_REGION=us-east-1
+MODEL_ID=global.anthropic.claude-sonnet-4-6
+FALLBACK_MODEL_ID=anthropic.claude-sonnet-4-5-20250929-v1:0
+```
+
+**Note:** Ensure your AWS profile is configured:
+```bash
+aws configure --profile your-aws-profile
+```
+
+For detailed configuration options, see [CONFIGURATION.md](CONFIGURATION.md).
 
 ### 3. Run the Agent
 ```bash
@@ -33,12 +49,20 @@ python worker_agent.py Worker_alpha --profile researcher
 Claude_SDK/
 ├── Core Agents
 │   ├── lead_agent.py      # Lead orchestrator
-│   └── worker_agent.py    # Worker teammates
+│   ├── worker_agent.py    # Worker teammates
+│   ├── subagent_loader.py # Subagent registry (NEW!)
+│   └── subagent_executor.py # Execution engine (NEW!)
+│
+├── Subagents (NEW!)
+│   ├── researcher.md      # Research specialist
+│   ├── developer.md       # Code specialist
+│   ├── analyst.md         # Analysis specialist
+│   └── general.md         # General-purpose
 │
 ├── Infrastructure
 │   ├── config.py          # Configuration
 │   ├── prompts.py         # System prompts
-│   ├── tools.py           # Tool handlers (8 tools)
+│   ├── tools.py           # Tool handlers
 │   ├── task_manager.py    # Task board
 │   ├── compression.py     # 3-layer memory
 │   ├── background_jobs.py # Async jobs
@@ -53,6 +77,7 @@ Claude_SDK/
 
 ## ✨ Features
 
+- **Subagent Architecture** - Claude Code-style isolated contexts (NEW!)
 - **Plan-First Execution** - Always plans before acting
 - **Web Search** - Internet access via DuckDuckGo
 - **Worker Specialization** - Skill-based task matching
@@ -60,9 +85,35 @@ Claude_SDK/
 - **Infinite Sessions** - 3-layer compression
 - **Background Jobs** - Async command execution
 - **Multi-Agent** - Autonomous coordination
+- **Skills System** - Pluggable domain expertise modules
+
+### 🆕 Subagent System
+
+The SDK now supports **Claude Code's subagent architecture**:
+
+```python
+# Spawn specialized subagents with isolated contexts
+Agent(
+    subagent_type="researcher",  # researcher, developer, analyst, general
+    prompt="Research AWS Bedrock pricing and summarize",
+    description="Research pricing"
+)
+```
+
+**Features:**
+- ✅ Isolated context per subagent (no context bleed)
+- ✅ Tool restrictions (allowlist/denylist per subagent)
+- ✅ Built-in specialists: Researcher, Developer, Analyst, General
+- ✅ Sync/async execution with resume capability
+- ✅ Easy to extend: Just drop in a markdown file
+
+**See [`SUBAGENTS.md`](SUBAGENTS.md) for full documentation.**
 
 ## 📚 Documentation
 
+- [**Subagent Guide**](SUBAGENTS.md) - Claude Code-style subagents (NEW!)
+- [Implementation Summary](IMPLEMENTATION_SUMMARY.md) - What was built
+- [Configuration Guide](CONFIGURATION.md) - Setup and config
 - [Quick Start Guide](docs/QUICKSTART.md) - Getting started
 - [Final Summary](docs/FINAL_SUMMARY.md) - Complete overview
 - [Phase 2 Guide](docs/PHASE2_GUIDE.md) - Advanced features

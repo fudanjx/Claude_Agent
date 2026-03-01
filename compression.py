@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+import config
 
 
 class CompressionManager:
@@ -25,9 +26,9 @@ class CompressionManager:
         self.working_set_file = self.context_dir / "working_set.md"
         self.rolling_summary_file = self.context_dir / "rolling_summary.md"
 
-        # Thresholds
-        self.WORKING_SET_MAX_CHARS = 2000
-        self.ROLLING_SUMMARY_MAX_CHARS = 5000
+        # Thresholds from configuration (allows customization via config.yaml or .env)
+        self.WORKING_SET_MAX_CHARS = config.WORKING_SET_MAX_CHARS
+        self.ROLLING_SUMMARY_MAX_CHARS = config.ROLLING_SUMMARY_MAX_CHARS
 
     def get_working_set(self) -> str:
         """Get current working set."""

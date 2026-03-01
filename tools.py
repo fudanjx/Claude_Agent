@@ -483,7 +483,7 @@ class ToolDispatcher:
             },
             {
                 "name": "read_inbox",
-                "description": "Read messages from Lead's inbox. Returns messages from worker agents.",
+                "description": "Read lightweight message summaries from Lead's inbox. Returns metadata and file pointers for messages from worker agents. To read full message content, use read_file on the 'file_path' field. This token-efficient approach reduces context usage by ~40x.",
                 "input_schema": {
                     "type": "object",
                     "properties": {}

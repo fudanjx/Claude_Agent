@@ -13,6 +13,7 @@ from task_manager import TaskManager
 from compression import CompressionManager
 from background_jobs import BackgroundJobManager
 from mailbox import MailboxManager
+from bedrock_client import create_bedrock_client
 
 
 class LeadAgent:
@@ -23,12 +24,11 @@ class LeadAgent:
         # Initialize directories
         config.init_directories()
 
-        # Initialize AWS Bedrock client
-        session = boto3.Session(profile_name=config.AWS_PROFILE)
-        self.bedrock = session.client(
-            service_name="bedrock-runtime",
-            region_name=config.AWS_REGION
-        )
+        # Initialize AWS Bedrock client with retry and fallback
+        self.bedrock = create_bedrock_client()
+        print(f"  🤖 Primary model: {self.bedrock.primary_model}")
+        print(f"  🔄 Fallback model: {self.bedrock.fallback_model}")
+        print(f"  ⏱️  Timeout: {config.BEDROCK_READ_TIMEOUT}s")
 
         # Initialize components
         self.tool_dispatcher = ToolDispatcher(config.STATE_DIR)
@@ -45,11 +45,35 @@ class LeadAgent:
         self.events_log = config.STATE_DIR / "logs" / "events.jsonl"
         self.events_log.parent.mkdir(parents=True, exist_ok=True)
 
+        # Load subagent registry
+        from subagent_loader import SubagentRegistry
+        self.subagent_registry = SubagentRegistry(Path(__file__).parent)
+
+        # Track active/completed subagents
+        self.subagents: Dict[str, Any] = {}  # agent_id -> SubagentExecutor
+        self.subagent_counter = 0
+
+        # Load skills
+        self.skill_loader = None
+        if config.SKILLS_ENABLED and config.SKILLS_DIR.exists():
+            from skill_loader import SkillLoader
+            self.skill_loader = SkillLoader(config.SKILLS_DIR)
+            self.skill_loader.discover_skills()
+            skill_count = len(self.skill_loader.skills)
+            if skill_count > 0:
+                print(f"  Skills: {skill_count} available")
+
         print(f"✓ Lead Agent initialized (Phase 2)")
         print(f"  Model: {config.MODEL_ID}")
         print(f"  AWS Profile: {config.AWS_PROFILE}")
         print(f"  State Directory: {config.STATE_DIR.absolute()}")
-        print(f"  Features: Compression, Background Jobs, Mailbox, Workers")
+        features = "Compression, Background Jobs, Mailbox, Workers"
+        if self.skill_loader and len(self.skill_loader.skills) > 0:
+            features += ", Skills"
+        if len(self.subagent_registry.list_subagents()) > 0:
+            subagent_count = len(self.subagent_registry.list_subagents())
+            features += f", Subagents ({subagent_count})"
+        print(f"  Features: {features}")
 
     def _log_event(self, event_type: str, data: Dict[str, Any]):
         """Log an event to disk."""
@@ -65,19 +89,44 @@ class LeadAgent:
         """Call Claude API via AWS Bedrock."""
         # Add user message if provided
         if user_message:
+            # Check if any skills should be activated
+            if self.skill_loader and self.skill_loader.skills:
+                for skill_name, skill in self.skill_loader.skills.items():
+                    if not skill.loaded and self.skill_loader.should_activate_skill(skill_name, user_message):
+                        # Activate skill
+                        content = self.skill_loader.load_skill_content(skill_name)
+                        if content:
+                            print(f"  🎯 Activated skill: {skill_name}")
+                            # Inject skill content into user message
+                            user_message = f"{user_message}\n\n<skill_activated name=\"{skill_name}\">\n{content}\n</skill_activated>"
+
             self.messages.append({
                 "role": "user",
                 "content": user_message
             })
+
+        # Build system prompt with skills summary
+        system_prompt = LEAD_AGENT_PROMPT
+        if self.skill_loader and self.skill_loader.skills:
+            skills_summary = self.skill_loader.get_skills_summary()
+            system_prompt = system_prompt.format(skills_summary=skills_summary)
+        else:
+            system_prompt = system_prompt.format(skills_summary="No skills loaded.")
+
+        # Build tool definitions (includes Agent tool)
+        tools = self.tool_dispatcher.get_tool_definitions()
+        # Add Agent tool from subagent registry
+        agent_tool = self.subagent_registry.get_tool_definition_for_lead()
+        tools.append(agent_tool)
 
         # Prepare request
         request_body = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": config.MAX_TOKENS,
             "temperature": config.TEMPERATURE,
-            "system": LEAD_AGENT_PROMPT,
+            "system": system_prompt,
             "messages": self.messages,
-            "tools": self.tool_dispatcher.get_tool_definitions()
+            "tools": tools
         }
 
         # Call Bedrock
@@ -103,8 +152,12 @@ class LeadAgent:
         print(f"  🔧 Tool: {tool_name}")
         print(f"     Input: {json.dumps(tool_input, indent=2)}")
 
+        # Special handling for Agent tool (spawn subagent)
+        if tool_name == "Agent":
+            result = self._handle_agent_tool(tool_input)
+
         # Special handling for task management tools
-        if tool_name == "create_task":
+        elif tool_name == "create_task":
             task = self.task_manager.create_task(
                 goal=tool_input["goal"],
                 deps=tool_input.get("deps", []),
@@ -154,11 +207,14 @@ class LeadAgent:
 
         # Mailbox tools
         elif tool_name == "read_inbox":
-            messages = self.mailbox.read_inbox("Lead", mark_read=False)
+            # Use lightweight summaries instead of full message content
+            # This reduces token usage by ~40x (from 4000+ to ~100 tokens per message)
+            summaries = self.mailbox.get_inbox_summary("Lead")
             result = {
                 "success": True,
-                "messages": [m.to_dict() for m in messages],
-                "count": len(messages)
+                "messages": summaries,
+                "count": len(summaries),
+                "note": "Messages are lightweight summaries. Use read_file on 'file_path' field to get full message content when needed."
             }
 
         elif tool_name == "send_message":
@@ -182,6 +238,69 @@ class LeadAgent:
             "tool_use_id": tool_use_id,
             "content": json.dumps(result)
         }
+
+    def _handle_agent_tool(self, tool_input: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle Agent tool invocation (spawn subagent)."""
+        subagent_type = tool_input['subagent_type']
+        prompt = tool_input['prompt']
+        description = tool_input.get('description', 'Subagent task')
+        run_in_background = tool_input.get('run_in_background', False)
+        resume = tool_input.get('resume')
+
+        # Check if resuming existing subagent
+        if resume and resume in self.subagents:
+            print(f"\n🔄 Resuming subagent: {resume}")
+            executor = self.subagents[resume]
+            # Add continuation prompt to existing conversation
+            executor.messages.append({
+                "role": "user",
+                "content": prompt
+            })
+            # Continue execution
+            result = executor.execute_sync()
+            return result
+
+        # Get subagent definition
+        definition = self.subagent_registry.get_subagent(subagent_type)
+        if not definition:
+            return {
+                "success": False,
+                "error": f"Unknown subagent type: {subagent_type}"
+            }
+
+        # Generate unique subagent ID
+        self.subagent_counter += 1
+        agent_id = f"agent-{self.subagent_counter:04d}"
+
+        print(f"\n🔄 Spawning subagent: {subagent_type} ({agent_id})")
+        print(f"   Task: {description}")
+
+        # Create and execute subagent
+        from subagent_executor import SubagentExecutor
+        executor = SubagentExecutor(
+            agent_id=agent_id,
+            definition=definition,
+            initial_prompt=prompt,
+            parent_agent=self
+        )
+
+        # Track subagent
+        self.subagents[agent_id] = executor
+
+        # Execute (blocking or background)
+        if run_in_background:
+            result = executor.execute_async()
+            print(f"   Status: Running in background")
+            return {
+                "success": True,
+                "agent_id": agent_id,
+                "status": "running",
+                "message": f"Subagent {agent_id} started in background. Use agent_id to check status or resume."
+            }
+        else:
+            result = executor.execute_sync()
+            print(f"   Status: Completed in {executor.execution.turns} turns")
+            return result
 
     def _process_response(self, response: Dict[str, Any]) -> bool:
         """Process Claude's response. Returns True if conversation should continue."""

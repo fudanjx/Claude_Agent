@@ -1,0 +1,57 @@
+# Claude Agent SDK Configuration
+# This file contains non-sensitive application settings
+# For environment-specific and sensitive values, use .env file
+
+# Agent Configuration
+agent:
+  # Temperature for model sampling (0.0 = deterministic, 2.0 = very creative)
+  temperature: 1.0
+
+  # Maximum tokens per model response
+  max_tokens: 20000
+
+  # Maximum iterations before stopping
+  max_iterations:
+    lead: 50      # Lead agent max iterations
+    worker: 20    # Worker agent max iterations
+
+# AWS Bedrock Client Configuration
+bedrock:
+  # Timeout for reading response from Bedrock (seconds)
+  read_timeout: 300      # 5 minutes
+
+  # Timeout for establishing connection (seconds)
+  connect_timeout: 60    # 1 minute
+
+  # Number of retries before falling back to alternate model
+  max_retries: 3
+
+  # Exponential backoff base for retries (delay = base^attempt seconds)
+  retry_backoff_base: 2
+
+# Compression Configuration
+# Controls when agent context gets compressed to save space
+compression:
+  # Maximum characters in working set before compression
+  working_set_max_chars: 10000     # ~10KB
+
+  # Maximum characters in rolling summary
+  rolling_summary_max_chars: 20000 # ~20KB
+
+# Worker Agent Configuration
+worker:
+  # Interval between scans for new tasks (seconds)
+  scan_interval: 10
+
+# Skills Configuration
+skills:
+  # Enable/disable skills system
+  enabled: true
+
+  # Directory containing skill definitions
+  directory: "skills"
+
+# State Directory Configuration
+state:
+  # Root directory for agent state storage
+  directory: ".agent_state"
