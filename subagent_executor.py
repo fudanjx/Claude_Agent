@@ -66,6 +66,11 @@ class SubagentExecutor:
         # Tool dispatcher with restrictions
         self.tool_dispatcher = self._create_restricted_tool_dispatcher()
 
+        # Skill support
+        self.skill_loader = None
+        self.active_skills: Dict[str, str] = {}  # skill_name -> content
+        self._initialize_skills()
+
         # Execution state
         self.execution = SubagentExecution(
             agent_id=agent_id,
@@ -102,10 +107,70 @@ class SubagentExecutor:
 
         return dispatcher
 
+    def _initialize_skills(self):
+        """Initialize skill system based on subagent's skill mode."""
+        if not config.SKILLS_ENABLED:
+            return
+
+        skill_mode = self.definition.skill_mode
+
+        if skill_mode == "none":
+            # No skill support
+            return
+
+        # Initialize skill loader
+        from skill_loader import SkillLoader
+        self.skill_loader = SkillLoader(config.SKILLS_DIR)
+        self.skill_loader.discover_skills()
+
+        if skill_mode == "static":
+            # Type 1: Pre-defined skills - load at initialization
+            self._load_static_skills()
+        elif skill_mode == "dynamic":
+            # Type 2: Dynamic skills - will load on-demand
+            print(f"  🎯 Subagent {self.agent_id} has dynamic skill access")
+
+    def _load_static_skills(self):
+        """Load pre-defined skills for specialized subagents (Type 1)."""
+        if not self.definition.skills:
+            return
+
+        print(f"  📚 Loading static skills for {self.definition.name}:")
+        for skill_name in self.definition.skills:
+            if skill_name in self.skill_loader.skills:
+                content = self.skill_loader.load_skill_content(skill_name)
+                if content:
+                    self.active_skills[skill_name] = content
+                    print(f"     ✓ {skill_name}")
+            else:
+                print(f"     ⚠️  Skill not found: {skill_name}")
+
+    def _check_and_activate_dynamic_skills(self, user_message: str):
+        """Check if any skills should be dynamically activated (Type 2)."""
+        if self.definition.skill_mode != "dynamic" or not self.skill_loader:
+            return
+
+        # Check all available skills for trigger matches
+        for skill_name, skill in self.skill_loader.skills.items():
+            # Skip if already loaded
+            if skill_name in self.active_skills:
+                continue
+
+            # Check if skill should be activated
+            if self.skill_loader.should_activate_skill(skill_name, user_message):
+                content = self.skill_loader.load_skill_content(skill_name)
+                if content:
+                    self.active_skills[skill_name] = content
+                    print(f"  🎯 Dynamically activated skill: {skill_name}")
+
     def execute_sync(self) -> Dict[str, Any]:
         """Execute subagent synchronously (blocking)."""
         try:
-            # Build system prompt
+            # Check for dynamic skill activation before starting
+            if self.definition.skill_mode == "dynamic":
+                self._check_and_activate_dynamic_skills(self.initial_prompt)
+
+            # Build system prompt (includes active skills)
             system_prompt = self._build_system_prompt()
 
             # Add initial user message
@@ -181,6 +246,24 @@ class SubagentExecutor:
         available_tools = self.tool_dispatcher.get_tool_definitions()
         tools_list = ", ".join(t['name'] for t in available_tools)
         prompt += f"- Available tools: {tools_list}\n"
+
+        # Add active skills information
+        if self.active_skills:
+            prompt += f"\n## Active Skills\n\n"
+            prompt += f"You have {len(self.active_skills)} specialized skill(s) loaded:\n"
+            for skill_name in self.active_skills.keys():
+                prompt += f"- {skill_name}\n"
+
+            # Inject full skill content
+            for skill_name, skill_content in self.active_skills.items():
+                prompt += f"\n### Skill: {skill_name}\n\n"
+                prompt += f"<skill_content name=\"{skill_name}\">\n"
+                prompt += skill_content
+                prompt += f"\n</skill_content>\n"
+
+        # Add skill mode info
+        if self.definition.skill_mode == "dynamic":
+            prompt += f"\n**Note**: You have dynamic skill access. Additional skills may be activated during execution based on task requirements.\n"
 
         # IMPORTANT: Clarify that Agent tool is not available (prevent grandchildren)
         prompt += "\n**IMPORTANT**: You cannot spawn other subagents. The Agent tool is not available to you."

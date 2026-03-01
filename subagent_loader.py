@@ -23,7 +23,8 @@ class SubagentDefinition:
     model: str = "inherit"  # sonnet, opus, haiku, inherit
     permission_mode: str = "default"
     max_turns: int = 20
-    skills: Optional[List[str]] = None
+    skills: Optional[List[str]] = None  # Pre-defined skills (static mode)
+    skill_mode: str = "none"  # none, static, dynamic
     memory: Optional[str] = None  # user, project, local
     background: bool = False
     hooks: Optional[Dict[str, Any]] = None
@@ -91,6 +92,16 @@ class SubagentRegistry:
         # Parse YAML frontmatter
         frontmatter = yaml.safe_load(frontmatter_str)
 
+        # Determine skill mode
+        skills = frontmatter.get('skills')
+        skill_mode = frontmatter.get('skillMode', 'none')
+
+        # Auto-detect skill mode if not specified
+        if skill_mode == 'none' and skills:
+            skill_mode = 'static'  # Has predefined skills
+        elif skill_mode == 'none' and frontmatter.get('dynamicSkills', False):
+            skill_mode = 'dynamic'  # Explicitly dynamic
+
         # Build definition
         return SubagentDefinition(
             name=frontmatter['name'],
@@ -101,7 +112,8 @@ class SubagentRegistry:
             model=frontmatter.get('model', 'inherit'),
             permission_mode=frontmatter.get('permissionMode', 'default'),
             max_turns=frontmatter.get('maxTurns', 20),
-            skills=frontmatter.get('skills'),
+            skills=skills,
+            skill_mode=skill_mode,
             memory=frontmatter.get('memory'),
             background=frontmatter.get('background', False),
             hooks=frontmatter.get('hooks'),
